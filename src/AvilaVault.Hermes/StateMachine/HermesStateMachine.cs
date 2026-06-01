@@ -11,7 +11,7 @@ public abstract class HermesStateMachine<TSaga> : ISagaStateMachine
     where TSaga : class, ISagaState, new()
 {
     // Estados reservados (igual ao MassTransit)
-    public string Name { get; } = string.Empty;
+    public virtual string Name => GetType().Name.Replace("StateMachine", "");
     public State Initial { get; } = new("Initial");
     public State Final { get; } = new("Final");
 
@@ -32,7 +32,7 @@ public abstract class HermesStateMachine<TSaga> : ISagaStateMachine
 
     // ── Dispatch (chamado pelo SagaMessageHandler) ───────────────────────────
 
-    internal async Task DispatchAsync<TMessage>(
+    public async Task DispatchAsync<TMessage>(
         TSaga saga,
         IEventContext<TMessage> context,
         CancellationToken ct)

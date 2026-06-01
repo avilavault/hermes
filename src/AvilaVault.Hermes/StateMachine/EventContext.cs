@@ -2,7 +2,7 @@
 
 namespace AvilaVault.Hermes.StateMachine;
 
-internal sealed class EventContext<TMessage> : IEventContext<TMessage>
+public sealed class EventContext<TMessage> : IEventContext<TMessage>
 {
     public TMessage Message { get; }
     public Guid CorrelationId { get; }

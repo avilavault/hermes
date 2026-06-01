@@ -8,7 +8,7 @@ namespace AvilaVault.Hermes.InMemory;
 /// Handler registrado no DI para cada (TStateMachine, TMessage).
 /// Resolve ou cria a saga, faz o dispatch para a machine e persiste.
 /// </summary>
-internal sealed class SagaMessageHandler<TStateMachine, TSaga, TMessage>
+public sealed class SagaMessageHandler<TStateMachine, TSaga, TMessage>
     : ISagaMessageHandler<TMessage>
     where TStateMachine : HermesStateMachine<TSaga>
     where TSaga : class, ISagaState, new()
