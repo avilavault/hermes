@@ -7,10 +7,11 @@ namespace AvilaVault.Hermes.StateMachine;
 /// Derive desta classe, declare seus State e Event<T> como propriedades,
 /// e configure as transições no construtor usando Initially() / During() / When() / Then() / TransitionTo().
 /// </summary>
-public abstract class HermesStateMachine<TSaga>
+public abstract class HermesStateMachine<TSaga> : ISagaStateMachine
     where TSaga : class, ISagaState, new()
 {
     // Estados reservados (igual ao MassTransit)
+    public string Name { get; } = string.Empty;
     public State Initial { get; } = new("Initial");
     public State Final { get; } = new("Final");
 
@@ -45,6 +46,6 @@ public abstract class HermesStateMachine<TSaga>
         await transition.ExecuteAsync(saga, context, ct);
     }
 
-    internal IEnumerable<Type> GetRegisteredEventTypes()
+    public IEnumerable<Type> GetRegisteredEventTypes()
         => _transitions.Keys.Select(k => k.eventType).Distinct();
 }
