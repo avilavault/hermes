@@ -1,11 +1,8 @@
 using AvilaVault.Hermes.Abstractions;
 using AvilaVault.Hermes.DependencyInjection;
-using AvilaVault.Hermes.EntityFramework;
-using AvilaVault.Hermes.StateMachine;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Xunit;
 
 namespace AvilaVault.Hermes.Tests;
 
@@ -30,7 +27,7 @@ public class ConcurrencyControlTests : IDisposable
         {
             cfg.AddSagaStateMachine<OrderStateMachine, OrderSagaState>()
                .EntityFramework(opt =>
-                   opt.UseInMemoryDatabase(dbName));
+                    opt.UseInMemoryDatabase(dbName));
         });
 
         _provider = services.BuildServiceProvider();
@@ -81,18 +78,18 @@ public class ConcurrencyControlTests : IDisposable
         // Scope2 tenta salvar (deve ter retry automático)
         saga2.CurrentState = "Cancelled";
         saga2.WasCancelled = true;
-        
+
         // Não deve lançar exceção por causa do retry automático
         await repo2.SaveAsync(saga2);
 
         // Assert — O último a salvar vence
         var final = await mainRepo.GetAsync(correlationId);
         Assert.NotNull(final);
-        
+
         // InMemoryDatabase não simula conflitos de concorrência reais
         // O importante é que não lançou exceção e o estado foi persistido
         Assert.True(final.CurrentState == "Paid" || final.CurrentState == "Cancelled" || final.CurrentState == "Submitted");
-        
+
         // Nota: Para testar controle de concorrência real com RowVersion,
         // use SQLite com arquivo ou SQL Server
 

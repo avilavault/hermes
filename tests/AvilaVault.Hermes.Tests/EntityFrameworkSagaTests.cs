@@ -1,11 +1,8 @@
 using AvilaVault.Hermes.Abstractions;
 using AvilaVault.Hermes.DependencyInjection;
-using AvilaVault.Hermes.EntityFramework;
-using AvilaVault.Hermes.StateMachine;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Xunit;
 
 namespace AvilaVault.Hermes.Tests;
 
@@ -60,7 +57,7 @@ public class EntityFrameworkSagaTests : IDisposable
 
         // Assert — Verificar persistência
         var saga = await repository.GetAsync(correlationId);
-        
+
         Assert.NotNull(saga);
         Assert.Equal("Submitted", saga.CurrentState);
         Assert.Equal("ORD-001", saga.OrderNumber);
@@ -81,7 +78,7 @@ public class EntityFrameworkSagaTests : IDisposable
 
         // Assert
         var saga = await repository.GetAsync(correlationId);
-        
+
         Assert.NotNull(saga);
         Assert.Equal("Paid", saga.CurrentState);
         Assert.Equal("ORD-002", saga.OrderNumber);
@@ -120,7 +117,7 @@ public class EntityFrameworkSagaTests : IDisposable
 
         // Assert
         var saga = await repository.GetAsync(correlationId);
-        
+
         Assert.NotNull(saga);
         Assert.Equal("Cancelled", saga.CurrentState);
         Assert.True(saga.WasCancelled);
@@ -137,13 +134,13 @@ public class EntityFrameworkSagaTests : IDisposable
         // Act — Enviar evento em estado inválido
         await bus.PublishAsync(new OrderPlaced(correlationId, "ORD-005", 200m));
         await bus.PublishAsync(new PaymentApproved(correlationId));
-        
+
         // Tentar cancelar após já estar pago (deve ser ignorado)
         await bus.PublishAsync(new PaymentRejected(correlationId, "Tentativa duplicada"));
 
         // Assert — Estado não deve mudar
         var saga = await repository.GetAsync(correlationId);
-        
+
         Assert.NotNull(saga);
         Assert.Equal("Paid", saga.CurrentState);
         Assert.False(saga.WasCancelled); // Não deve ter sido marcado como cancelado
@@ -155,7 +152,7 @@ public class EntityFrameworkSagaTests : IDisposable
         // Arrange
         var bus = _provider.GetRequiredService<IHermesBus>();
         var repository = _provider.GetRequiredService<ISagaRepository<OrderSagaState>>();
-        
+
         var orderId1 = Guid.NewGuid();
         var orderId2 = Guid.NewGuid();
         var orderId3 = Guid.NewGuid();
@@ -164,7 +161,7 @@ public class EntityFrameworkSagaTests : IDisposable
         await bus.PublishAsync(new OrderPlaced(orderId1, "ORD-100", 100m));
         await bus.PublishAsync(new OrderPlaced(orderId2, "ORD-200", 200m));
         await bus.PublishAsync(new OrderPlaced(orderId3, "ORD-300", 300m));
-        
+
         await bus.PublishAsync(new PaymentApproved(orderId1));
         await bus.PublishAsync(new PaymentRejected(orderId2, "Sem saldo"));
 
@@ -175,11 +172,11 @@ public class EntityFrameworkSagaTests : IDisposable
 
         Assert.NotNull(saga1);
         Assert.Equal("Paid", saga1.CurrentState);
-        
+
         Assert.NotNull(saga2);
         Assert.Equal("Cancelled", saga2.CurrentState);
         Assert.True(saga2.WasCancelled);
-        
+
         Assert.NotNull(saga3);
         Assert.Equal("Submitted", saga3.CurrentState);
     }
@@ -197,7 +194,7 @@ public class EntityFrameworkSagaTests : IDisposable
 
         // Assert — Verificar precisão dos dados
         var saga = await repository.GetAsync(correlationId);
-        
+
         Assert.NotNull(saga);
         Assert.Equal(correlationId, saga.CorrelationId);
         Assert.Equal("ORD-COMPLEX-12345", saga.OrderNumber);
@@ -264,7 +261,7 @@ public class EntityFrameworkSagaTests : IDisposable
 
         // Assert — Verificar persistência
         var retrieved = await repository.GetAsync(correlationId);
-        
+
         Assert.NotNull(retrieved);
         Assert.Equal(correlationId, retrieved.CorrelationId);
         Assert.Equal("Submitted", retrieved.CurrentState);
@@ -292,14 +289,14 @@ public class EntityFrameworkSagaTests : IDisposable
         // Act — Atualizar saga existente
         var existing = await repository.GetAsync(correlationId);
         Assert.NotNull(existing);
-        
+
         existing.CurrentState = "Paid";
         existing.TotalAmount = 150m;
         await repository.SaveAsync(existing);
 
         // Assert — Verificar atualização
         var updated = await repository.GetAsync(correlationId);
-        
+
         Assert.NotNull(updated);
         Assert.Equal("Paid", updated.CurrentState);
         Assert.Equal(150m, updated.TotalAmount);

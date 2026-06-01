@@ -3,7 +3,6 @@ using AvilaVault.Hermes.DependencyInjection;
 using AvilaVault.Hermes.StateMachine;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Xunit;
 
 namespace AvilaVault.Hermes.Tests;
 
@@ -18,7 +17,7 @@ public record PaymentApproved(Guid CorrelationId)
 public record PaymentRejected(Guid CorrelationId, string Reason)
     : ICorrelatedMessage;
 
-public record OrderDelivered(Guid CorrelationId) 
+public record OrderDelivered(Guid CorrelationId)
     : ICorrelatedMessage;
 
 // ── Estado ───────────────────────────────────────────────────────────────────
