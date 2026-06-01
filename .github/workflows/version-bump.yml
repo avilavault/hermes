@@ -1,0 +1,71 @@
+name: Version Bump
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: 'patch'
+
+jobs:
+  bump-version:
+    name: Bump Version
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Configure Git
+      run: |
+        git config user.name "GitHub Actions"
+        git config user.email "actions@github.com"
+        
+    - name: Calculate New Version
+      id: version
+      run: |
+        # Get the latest tag
+        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+        VERSION=${LATEST_TAG#v}
+        
+        # Parse version parts
+        IFS='.' read -ra VERSION_PARTS <<< "$VERSION"
+        MAJOR=${VERSION_PARTS[0]:-1}
+        MINOR=${VERSION_PARTS[1]:-0}
+        PATCH=${VERSION_PARTS[2]:-0}
+        
+        # Bump version based on input
+        case "${{ github.event.inputs.version_type }}" in
+          major)
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+            ;;
+          minor)
+            MINOR=$((MINOR + 1))
+            PATCH=0
+            ;;
+          patch)
+            PATCH=$((PATCH + 1))
+            ;;
+        esac
+        
+        NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+        echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+        echo "📦 New Version: $NEW_VERSION"
+        
+    - name: Create and Push Tag
+      run: |
+        VERSION=${{ steps.version.outputs.new_version }}
+        git tag -a "v$VERSION" -m "Version bump: ${{ github.event.inputs.version_type }}"
+        git push origin "v$VERSION"
+        echo "✅ Created and pushed tag v$VERSION"

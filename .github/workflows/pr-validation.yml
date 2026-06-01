@@ -1,0 +1,118 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  MINIMUM_COVERAGE: 40
+
+jobs:
+  validate:
+    name: Validate Pull Request
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Restore dependencies
+      run: dotnet restore
+      
+    - name: Check formatting
+      run: dotnet format --verify-no-changes --verbosity diagnostic
+      
+    - name: Build
+      run: dotnet build --configuration Release --no-restore
+      
+    - name: Run tests
+      run: dotnet test --configuration Release --no-build --verbosity normal --collect:"XPlat Code Coverage" --results-directory ./coverage
+      
+    - name: Install Coverage Tools
+      run: dotnet tool install -g dotnet-reportgenerator-globaltool
+      
+    - name: Generate Coverage Report
+      run: |
+        reportgenerator \
+          -reports:./coverage/**/coverage.cobertura.xml \
+          -targetdir:./coverage-report \
+          -reporttypes:"Html;JsonSummary;MarkdownSummaryGithub"
+        
+    - name: Calculate and Validate Coverage
+      id: coverage
+      run: |
+        COVERAGE=$(cat ./coverage-report/Summary.json | grep -oP '"linecoverage":\s*\K[\d.]+' | head -1)
+        echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
+        echo "📊 Code Coverage: $COVERAGE%"
+        
+        if (( $(echo "$COVERAGE < ${{ env.MINIMUM_COVERAGE }}" | bc -l) )); then
+          echo "❌ Coverage $COVERAGE% is below minimum ${{ env.MINIMUM_COVERAGE }}%"
+          exit 1
+        else
+          echo "✅ Coverage $COVERAGE% meets minimum requirement"
+        fi
+        
+    - name: Comment PR with Coverage
+      uses: actions/github-script@v7
+      if: always()
+      with:
+        script: |
+          const fs = require('fs');
+          const coverage = '${{ steps.coverage.outputs.coverage }}';
+          const minimum = '${{ env.MINIMUM_COVERAGE }}';
+          const status = parseFloat(coverage) >= parseFloat(minimum) ? '✅' : '❌';
+          
+          let markdownReport = '';
+          try {
+            markdownReport = fs.readFileSync('./coverage-report/SummaryGithub.md', 'utf8');
+          } catch (e) {
+            markdownReport = 'Coverage report not available';
+          }
+          
+          const comment = `## ${status} Test Coverage Report
+          
+          **Coverage:** ${coverage}% (Minimum: ${minimum}%)
+          
+          ${markdownReport}
+          `;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+          
+    - name: Upload Coverage Report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: coverage-report
+        path: ./coverage-report/
+
+  analyze:
+    name: Code Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Restore dependencies
+      run: dotnet restore
+      
+    - name: Run Code Analysis
+      run: dotnet build --configuration Release --no-restore /p:EnforceCodeStyleInBuild=true

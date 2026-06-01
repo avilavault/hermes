@@ -1,0 +1,227 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  MINIMUM_COVERAGE: 40
+
+permissions:
+  contents: write
+  packages: write
+  pull-requests: write
+
+jobs:
+  build-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      coverage: ${{ steps.coverage.outputs.coverage }}
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Calculate Version
+      id: version
+      run: |
+        # Get the latest tag
+        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+        
+        if [ -z "$LATEST_TAG" ]; then
+          # No tags exist, start at 1.0.0
+          NEW_VERSION="1.0.0"
+        else
+          # Parse existing version
+          VERSION=${LATEST_TAG#v}
+          IFS='.' read -ra VERSION_PARTS <<< "$VERSION"
+          MAJOR=${VERSION_PARTS[0]:-1}
+          MINOR=${VERSION_PARTS[1]:-0}
+          PATCH=${VERSION_PARTS[2]:-0}
+          
+          # Increment patch version for push events
+          if [ "${{ github.event_name }}" == "push" ]; then
+            PATCH=$((PATCH + 1))
+          fi
+          
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+        fi
+        
+        # Add beta suffix for develop branch
+        if [ "${{ github.ref }}" == "refs/heads/develop" ]; then
+          BUILD_NUMBER="${{ github.run_number }}"
+          NEW_VERSION="$NEW_VERSION-beta.$BUILD_NUMBER"
+        fi
+        
+        echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+        echo "📦 Version: $NEW_VERSION"
+        echo "📦 Version: $NEW_VERSION"
+        
+    - name: Restore dependencies
+      run: dotnet restore
+      
+    - name: Build
+      run: dotnet build --configuration Release --no-restore /p:Version=${{ steps.version.outputs.version }}
+      
+    - name: Run tests
+      run: dotnet test --configuration Release --no-build --verbosity normal --collect:"XPlat Code Coverage" --results-directory ./coverage
+      
+    - name: Install Coverage Tools
+      run: dotnet tool install -g dotnet-reportgenerator-globaltool
+      
+    - name: Generate Coverage Report
+      run: |
+        reportgenerator \
+          -reports:./coverage/**/coverage.cobertura.xml \
+          -targetdir:./coverage-report \
+          -reporttypes:"Html;JsonSummary"
+        
+    - name: Calculate Coverage
+      id: coverage
+      run: |
+        # Extract coverage percentage from JSON summary
+        COVERAGE=$(cat ./coverage-report/Summary.json | grep -oP '"linecoverage":\s*\K[\d.]+' | head -1)
+        echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
+        echo "📊 Code Coverage: $COVERAGE%"
+        
+    - name: Validate Coverage
+      run: |
+        COVERAGE=${{ steps.coverage.outputs.coverage }}
+        MINIMUM=${{ env.MINIMUM_COVERAGE }}
+        
+        echo "Code Coverage: $COVERAGE%"
+        echo "Minimum Required: $MINIMUM%"
+        
+        if (( $(echo "$COVERAGE < $MINIMUM" | bc -l) )); then
+          echo "❌ Coverage $COVERAGE% is below minimum $MINIMUM%"
+          exit 1
+        else
+          echo "✅ Coverage $COVERAGE% meets minimum requirement"
+        fi
+        
+    - name: Upload Coverage Report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: ./coverage-report/
+        
+    - name: Pack NuGet Package
+      if: github.event_name == 'push'
+      run: |
+        dotnet pack src/AvilaVault.Hermes/AvilaVault.Hermes.csproj \
+          --configuration Release \
+          --no-build \
+          --output ./artifacts \
+          /p:PackageVersion=${{ steps.version.outputs.version }}
+        
+    - name: Upload NuGet Package
+      if: github.event_name == 'push'
+      uses: actions/upload-artifact@v4
+      with:
+        name: nuget-package
+        path: ./artifacts/*.nupkg
+
+  publish-nuget:
+    name: Publish to NuGet.org
+    needs: build-test
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Download NuGet Package
+      uses: actions/download-artifact@v4
+      with:
+        name: nuget-package
+        path: ./artifacts
+        
+    - name: Publish to NuGet.org
+      run: |
+        dotnet nuget push ./artifacts/*.nupkg \
+          --api-key "$NUGET_API_KEY" \
+          --source https://api.nuget.org/v3/index.json \
+          --skip-duplicate
+      env:
+        NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        
+    - name: Create Git Tag
+      if: github.ref == 'refs/heads/main'
+      run: |
+        VERSION=${{ needs.build-test.outputs.version }}
+        git config user.name "GitHub Actions"
+        git config user.email "actions@github.com"
+        
+        # Configure git to use the token
+        git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git
+        
+        git tag -a "v$VERSION" -m "Release version $VERSION"
+        git push origin "v$VERSION"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Create GitHub Release
+      if: github.ref == 'refs/heads/main'
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ needs.build-test.outputs.version }}
+        release_name: Release ${{ needs.build-test.outputs.version }}
+        body: |
+          ## 🚀 Release ${{ needs.build-test.outputs.version }}
+          
+          ### 📊 Metrics
+          - Code Coverage: ${{ needs.build-test.outputs.coverage }}%
+          - Build Number: ${{ github.run_number }}
+          
+          ### 📦 NuGet Package
+          ```
+          dotnet add package AvilaVault.Hermes --version ${{ needs.build-test.outputs.version }}
+          ```
+          
+          [View on NuGet.org](https://www.nuget.org/packages/AvilaVault.Hermes/${{ needs.build-test.outputs.version }})
+        draft: false
+        prerelease: false
+
+  notify:
+    name: Notify Results
+    needs: [build-test, publish-nuget]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Notification
+      run: |
+        if [ "${{ needs.build-test.result }}" == "success" ] && [ "${{ needs.publish-nuget.result }}" == "success" ]; then
+          echo "✅ Pipeline completed successfully!"
+          echo "📦 Version: ${{ needs.build-test.outputs.version }}"
+          echo "📊 Coverage: ${{ needs.build-test.outputs.coverage }}%"
+        else
+          echo "❌ Pipeline failed"
+        fi
