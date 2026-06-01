@@ -27,7 +27,7 @@ internal sealed class EntityFrameworkSagaRepository<TSaga>(
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, 
+            _logger.LogError(ex,
                 "[Hermes.EF] Erro ao carregar saga {SagaType} com CorrelationId={CorrelationId}",
                 typeof(TSaga).Name, correlationId);
             throw;

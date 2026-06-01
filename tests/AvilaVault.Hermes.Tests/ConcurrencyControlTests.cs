@@ -118,7 +118,7 @@ public class ConcurrencyControlTests : IDisposable
         {
             var current = await repo.GetAsync(correlationId);
             Assert.NotNull(current);
-            
+
             current.TotalAmount += 100m;
             current.CurrentState = $"State{i}";
             await repo.SaveAsync(current);
