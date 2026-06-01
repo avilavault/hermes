@@ -12,6 +12,10 @@ jobs:
   validate:
     name: Validate Pull Request
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     
     steps:
     - name: Checkout code
