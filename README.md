@@ -34,6 +34,21 @@ Use Hermes when you need to coordinate multiple async operations that can fail i
 
 ---
 
+## ✨ Features
+
+🎯 **Type-safe fluent DSL** — compile-time guarantees for state transitions  
+💾 **Multiple persistence options** — in-memory, Entity Framework Core, or custom  
+🔒 **Optimistic concurrency control** — automatic retry on conflicts (EF Core)  
+🧪 **Test-friendly** — built-in in-memory provider for unit tests  
+📊 **Query support** — direct EF Core queries on saga state  
+🚀 **Production-ready** — scoped lifetimes, comprehensive logging, error handling  
+🔌 **Transport-agnostic** — works with any message bus or queue  
+📦 **Zero dependencies** — only Microsoft.Extensions.* for DI and logging  
+🏗️ **Convention-based** — automatic table naming and indexing  
+⚡ **High-performance** — minimal allocations, efficient state lookups
+
+---
+
 ## 🚀 Quick Start
 
 ### 1. Installation
@@ -141,7 +156,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddHermes(cfg =>
 {
     cfg.AddSagaStateMachine<OrderStateMachine, OrderSagaState>()
-       .InMemory(); // or .UseSqlServer() / .UseRedis() in production
+       .InMemory(); // for development/testing
+       // .EntityFramework(opt => opt.UseSqlServer(connectionString)); // for production
 });
 
 var app = builder.Build();
@@ -178,6 +194,105 @@ public class OrdersController : ControllerBase
     {
         await _bus.PublishAsync(new PaymentApproved(correlationId));
         return Ok();
+    }
+}
+```
+
+---
+
+## 🏭 Production Setup with Entity Framework Core
+
+### 1. Install EF Core Provider
+
+```bash
+dotnet add package Microsoft.EntityFrameworkCore.SqlServer
+# or
+dotnet add package Npgsql.EntityFrameworkCore.PostgreSQL
+# or
+dotnet add package Microsoft.EntityFrameworkCore.Sqlite
+```
+
+### 2. Configure Persistence
+
+```csharp
+using AvilaVault.Hermes.DependencyInjection;
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddHermes(cfg =>
+{
+    cfg.AddSagaStateMachine<OrderStateMachine, OrderSagaState>()
+       .EntityFramework(opt => 
+           opt.UseSqlServer(
+               builder.Configuration.GetConnectionString("DefaultConnection"),
+               sqlOpt => sqlOpt.MigrationsAssembly("MyApp")));
+});
+
+var app = builder.Build();
+```
+
+### 3. Generate Database Migrations
+
+```bash
+# Install EF Core tools
+dotnet tool install --global dotnet-ef
+
+# Generate migration
+dotnet ef migrations add InitialSagaCreate
+
+# Apply to database
+dotnet ef database update
+```
+
+This creates a table with the following schema:
+
+```sql
+CREATE TABLE OrderState (
+    CorrelationId    UNIQUEIDENTIFIER PRIMARY KEY,
+    CurrentState     NVARCHAR(200) NOT NULL,
+    OrderNumber      NVARCHAR(MAX) NULL,
+    TotalAmount      DECIMAL(18,2) NOT NULL,
+    WasCancelled     BIT NOT NULL,
+    RowVersion       ROWVERSION NOT NULL
+);
+
+CREATE INDEX IX_OrderState_CurrentState ON OrderState(CurrentState);
+```
+
+### 4. Handle Concurrency
+
+The repository automatically retries up to 3 times on conflicts:
+
+```csharp
+// Two concurrent requests updating the same saga
+await Task.WhenAll(
+    bus.PublishAsync(new UpdateOrder(correlationId, amount: 100)),
+    bus.PublishAsync(new UpdateOrder(correlationId, amount: 200))
+);
+// ✅ Both succeed — automatic retry handles conflicts
+```
+
+### 5. Monitor Saga State
+
+Query saga state directly via Entity Framework:
+
+```csharp
+public class OrderQueryService
+{
+    private readonly ISagaDbContext _dbContext;
+    
+    public async Task<IEnumerable<OrderSagaState>> GetPendingOrdersAsync()
+    {
+        return await _dbContext.Set<OrderSagaState>()
+            .Where(s => s.CurrentState == "Submitted")
+            .ToListAsync();
+    }
+    
+    public async Task<OrderSagaState?> GetOrderAsync(Guid correlationId)
+    {
+        return await _dbContext.Set<OrderSagaState>()
+            .FirstOrDefaultAsync(s => s.CorrelationId == correlationId);
     }
 }
 ```
@@ -228,6 +343,27 @@ During(Paid)
         .Finalize();
 ```
 
+### Saga Deletion
+
+Sagas can be explicitly deleted before reaching the Final state:
+
+```csharp
+// In your state machine
+During(Cancelled)
+    .When(OrderExpired)
+        .Then(async ctx => 
+        {
+            var repo = ctx.GetService<ISagaRepository<OrderSagaState>>();
+            await repo.DeleteAsync(ctx.Saga.CorrelationId);
+        });
+
+// Or via repository directly
+var repo = serviceProvider.GetRequiredService<ISagaRepository<OrderSagaState>>();
+await repo.DeleteAsync(correlationId);
+```
+
+When a saga reaches the `Final` state via `.Finalize()`, it remains in storage but is no longer processed. Use explicit deletion for cleanup scenarios like cancellations or expirations.
+
 ---
 
 ## 🔄 Execution Flow
@@ -243,6 +379,8 @@ During(Paid)
 
 ## 💾 Persistence
 
+Hermes supports multiple persistence strategies for saga state storage.
+
 ### In-Memory (development/testing)
 
 ```csharp
@@ -250,17 +388,115 @@ cfg.AddSagaStateMachine<MyStateMachine, MyState>()
    .InMemory();
 ```
 
-Uses `ConcurrentDictionary` — doesn't survive restarts.
+Uses `ConcurrentDictionary` — doesn't survive restarts. Ideal for unit tests and local development.
 
-### Production (implement)
+### Entity Framework Core (production-ready)
 
-You can implement `ISagaRepository<TSaga>` to persist in:
+Full-featured persistence with automatic optimistic concurrency control.
 
-- SQL Server / PostgreSQL / MySQL
-- Redis
-- MongoDB
-- CosmosDB
-- Any store that supports lookup by CorrelationId
+#### Quick Setup (automatic DbContext)
+
+```csharp
+cfg.AddSagaStateMachine<OrderStateMachine, OrderSagaState>()
+   .EntityFramework(opt => opt.UseSqlServer(connectionString));
+```
+
+Hermes automatically creates a `SagaDbContext<TSaga>` with:
+- **CorrelationId** as primary key
+- **CurrentState** indexed for efficient queries
+- **RowVersion** for optimistic concurrency control
+- Automatic table naming (e.g., `OrderSagaState` → `OrderState`)
+
+#### Advanced Setup (custom DbContext)
+
+For multi-saga or shared DbContext scenarios:
+
+```csharp
+public class MyAppDbContext : DbContext, ISagaDbContext
+{
+    public DbSet<OrderSagaState> Orders => Set<OrderSagaState>();
+    public DbSet<PaymentSagaState> Payments => Set<PaymentSagaState>();
+    
+    public MyAppDbContext(DbContextOptions<MyAppDbContext> options) 
+        : base(options) { }
+    
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        // Customize mappings
+        modelBuilder.ApplyConfiguration(new OrderSagaStateMap());
+        modelBuilder.ApplyConfiguration(new PaymentSagaStateMap());
+    }
+}
+
+// Custom mapping
+public class OrderSagaStateMap : SagaClassMap<OrderSagaState>
+{
+    public override void Configure(EntityTypeBuilder<OrderSagaState> builder)
+    {
+        base.Configure(builder); // Apply default conventions
+        
+        builder.ToTable("Orders"); // Custom table name
+        builder.Property(x => x.OrderNumber).HasMaxLength(50).IsRequired();
+        builder.HasIndex(x => x.OrderNumber).IsUnique();
+    }
+}
+
+// Registration
+services.AddDbContext<MyAppDbContext>(opt => 
+    opt.UseSqlServer(connectionString));
+
+services.AddHermes(cfg =>
+{
+    cfg.AddSagaStateMachine<OrderStateMachine, OrderSagaState>()
+       .EntityFramework<MyAppDbContext>();
+       
+    cfg.AddSagaStateMachine<PaymentStateMachine, PaymentSagaState>()
+       .EntityFramework<MyAppDbContext>();
+});
+```
+
+#### Supported Providers
+
+- **SQL Server** — `Microsoft.EntityFrameworkCore.SqlServer`
+- **PostgreSQL** — `Npgsql.EntityFrameworkCore.PostgreSQL`
+- **SQLite** — `Microsoft.EntityFrameworkCore.Sqlite`
+- **MySQL** — `Pomelo.EntityFrameworkCore.MySql`
+- **In-Memory** — `Microsoft.EntityFrameworkCore.InMemory` (testing only)
+
+#### Database Migrations
+
+Generate and apply migrations using EF Core tools:
+
+```bash
+# Install tools
+dotnet tool install --global dotnet-ef
+
+# Add migration
+dotnet ef migrations add InitialSagaCreate --context SagaDbContext
+
+# Apply to database
+dotnet ef database update --context SagaDbContext
+```
+
+#### Concurrency Control
+
+Hermes automatically handles optimistic concurrency conflicts:
+
+```csharp
+// Automatic retry up to 3 attempts on DbUpdateConcurrencyException
+await bus.PublishAsync(new PaymentApproved(correlationId));
+```
+
+If concurrent updates occur:
+1. First update succeeds
+2. Second update detects conflict via RowVersion
+3. Entity reloads from database
+4. Operation retries automatically (up to 3 attempts)
+5. If all retries fail, throws `DbUpdateConcurrencyException`
+
+### Custom Persistence
+
+Implement `ISagaRepository<TSaga>` for other storage systems:
 
 ```csharp
 public interface ISagaRepository<TSaga>
@@ -268,12 +504,22 @@ public interface ISagaRepository<TSaga>
 {
     Task<TSaga?> GetAsync(Guid correlationId, CancellationToken ct = default);
     Task SaveAsync(TSaga saga, CancellationToken ct = default);
+    Task DeleteAsync(Guid correlationId, CancellationToken ct = default);
 }
 ```
+
+Supported scenarios:
+- **Redis** — fast lookups with JSON serialization
+- **MongoDB** — document-based storage
+- **CosmosDB** — globally distributed sagas
+- **DynamoDB** — AWS-native persistence
+- Any store supporting key-value lookups by `CorrelationId`
 
 ---
 
 ## 🧪 Testing Sagas
+
+### Unit Tests (In-Memory)
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -329,6 +575,88 @@ public class OrderSagaTests
 }
 ```
 
+### Integration Tests (Entity Framework Core)
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Xunit;
+
+public class OrderSagaIntegrationTests : IAsyncLifetime
+{
+    private IServiceProvider _provider = null!;
+
+    public async Task InitializeAsync()
+    {
+        var services = new ServiceCollection();
+        
+        services.AddHermes(cfg =>
+        {
+            cfg.AddSagaStateMachine<OrderStateMachine, OrderSagaState>()
+               .EntityFramework(opt => 
+                   opt.UseSqlite("Data Source=:memory:"));
+        });
+
+        _provider = services.BuildServiceProvider();
+        
+        // Create database
+        var dbContext = _provider.GetRequiredService<ISagaDbContext>();
+        await ((DbContext)dbContext).Database.EnsureCreatedAsync();
+    }
+
+    public async Task DisposeAsync()
+    {
+        var dbContext = _provider.GetRequiredService<ISagaDbContext>();
+        await ((DbContext)dbContext).Database.EnsureDeletedAsync();
+    }
+
+    [Fact]
+    public async Task CompleteSagaLifecycle_ShouldPersist_AllTransitions()
+    {
+        var bus = _provider.GetRequiredService<IHermesBus>();
+        var repo = _provider.GetRequiredService<ISagaRepository<OrderSagaState>>();
+
+        var orderId = Guid.NewGuid();
+
+        // Initial → Submitted
+        await bus.PublishAsync(new OrderPlaced(orderId, "ORD-001", 500m));
+        var saga = await repo.GetAsync(orderId);
+        Assert.Equal("Submitted", saga!.CurrentState);
+
+        // Submitted → Paid
+        await bus.PublishAsync(new PaymentApproved(orderId));
+        saga = await repo.GetAsync(orderId);
+        Assert.Equal("Paid", saga!.CurrentState);
+
+        // Paid → Final
+        await bus.PublishAsync(new OrderDelivered(orderId));
+        saga = await repo.GetAsync(orderId);
+        Assert.Equal("Final", saga!.CurrentState);
+    }
+
+    [Fact]
+    public async Task ConcurrentUpdates_ShouldHandle_ConflictsGracefully()
+    {
+        var bus = _provider.GetRequiredService<IHermesBus>();
+        var repo = _provider.GetRequiredService<ISagaRepository<OrderSagaState>>();
+
+        var orderId = Guid.NewGuid();
+        await bus.PublishAsync(new OrderPlaced(orderId, "ORD-002", 100m));
+
+        // Simulate concurrent updates
+        var tasks = Enumerable.Range(1, 10)
+            .Select(i => bus.PublishAsync(new UpdateOrderAmount(orderId, i * 10m)))
+            .ToArray();
+
+        // All should succeed due to automatic retry
+        await Task.WhenAll(tasks);
+
+        var saga = await repo.GetAsync(orderId);
+        Assert.NotNull(saga);
+    }
+}
+```
+
 ---
 
 ## 🏗️ Architecture
@@ -372,7 +700,8 @@ AvilaVault.Hermes/
 │   ├── ICorrelatedMessage.cs       # Message contract
 │   ├── IHermesBus.cs                # Event bus
 │   ├── ISagaState.cs                # State contract
-│   ├── ISagaRepository.cs           # Persistence
+│   ├── ISagaRepository.cs           # Persistence abstraction
+│   ├── ISagaDbContext.cs            # DbContext abstraction
 │   └── IEventContext.cs             # Execution context
 ├── StateMachine/
 │   ├── HermesStateMachine.cs        # Base class
@@ -381,9 +710,14 @@ AvilaVault.Hermes/
 │   ├── BehaviorBuilder.cs           # Fluent DSL
 │   └── TransitionDefinition.cs      # Transition metadata
 ├── InMemory/
-│   ├── InMemoryHermesBus.cs         # In-memory implementation
+│   ├── InMemoryHermesBus.cs         # In-memory event bus
 │   ├── InMemorySagaRepository.cs    # Memory repository
 │   └── SagaMessageHandler.cs        # Generic handler
+├── EntityFramework/
+│   ├── EntityFrameworkSagaRepository.cs  # EF Core repository with concurrency
+│   ├── SagaDbContext.cs                  # Generic DbContext implementation
+│   ├── SagaClassMap.cs                   # Base entity configuration
+│   └── EntityFrameworkExtensions.cs      # DI registration extensions
 └── DependencyInjection/
     └── HermesServiceCollectionExtensions.cs
 ```
@@ -396,11 +730,12 @@ AvilaVault.Hermes/
 |-----------------------------|------------------------|-----------------------|
 | Transport integration       | RabbitMQ, Azure SB, etc | Transport-agnostic (bring your own) |
 | Scheduling                  | Built-in (Quartz)      | Manual implementation |
-| State persistence           | Entity Framework       | You implement         |
+| State persistence           | Entity Framework       | Entity Framework Core + custom implementations |
 | Automatic retry             | Yes                    | Delegated to transport |
 | Saga correlation            | Via message            | Via `CorrelationId`   |
+| Optimistic concurrency      | Yes (with EF)          | Yes (automatic with EF) |
 | Learning curve              | Steep                  | Gentle                |
-| Dependencies                | Many                   | Zero (beyond BCL)     |
+| Dependencies                | Many                   | Minimal (EF Core optional) |
 
 Hermes is **opinionated and minimalist** — you have full control over transport, persistence, and retry policies.
 
