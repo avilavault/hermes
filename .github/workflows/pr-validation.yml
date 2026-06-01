@@ -44,21 +44,45 @@ jobs:
       run: dotnet tool install -g dotnet-reportgenerator-globaltool
       
     - name: Generate Coverage Report
+      id: generate_report
+      continue-on-error: true
       run: |
         reportgenerator \
           -reports:./coverage/**/coverage.cobertura.xml \
           -targetdir:./coverage-report \
           -reporttypes:"Html;JsonSummary;MarkdownSummaryGithub"
         
-    - name: Calculate and Validate Coverage
+    - name: Calculate Coverage
       id: coverage
+      if: always()
+      continue-on-error: true
       run: |
-        COVERAGE=$(cat ./coverage-report/Summary.json | grep -oP '"linecoverage":\s*\K[\d.]+' | head -1)
+        if [ -f ./coverage-report/Summary.json ]; then
+          COVERAGE=$(cat ./coverage-report/Summary.json | grep -oP '"linecoverage":\s*\K[\d.]+' | head -1)
+          if [ -z "$COVERAGE" ]; then
+            COVERAGE="0"
+          fi
+        else
+          echo "⚠️ Coverage report not found"
+          COVERAGE="0"
+        fi
+        
         echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
         echo "📊 Code Coverage: $COVERAGE%"
         
-        if (( $(echo "$COVERAGE < ${{ env.MINIMUM_COVERAGE }}" | bc -l) )); then
-          echo "❌ Coverage $COVERAGE% is below minimum ${{ env.MINIMUM_COVERAGE }}%"
+    - name: Validate Coverage
+      if: always()
+      run: |
+        COVERAGE=${{ steps.coverage.outputs.coverage }}
+        MINIMUM=${{ env.MINIMUM_COVERAGE }}
+        
+        if [ -z "$COVERAGE" ] || [ "$COVERAGE" = "0" ]; then
+          echo "❌ Coverage calculation failed or no tests found"
+          exit 1
+        fi
+        
+        if (( $(echo "$COVERAGE < $MINIMUM" | bc -l) )); then
+          echo "❌ Coverage $COVERAGE% is below minimum $MINIMUM%"
           exit 1
         else
           echo "✅ Coverage $COVERAGE% meets minimum requirement"
@@ -70,25 +94,45 @@ jobs:
       with:
         script: |
           const fs = require('fs');
-          const coverage = '${{ steps.coverage.outputs.coverage }}';
+          const coverage = '${{ steps.coverage.outputs.coverage }}' || '0';
           const minimum = '${{ env.MINIMUM_COVERAGE }}';
-          const status = parseFloat(coverage) >= parseFloat(minimum) ? '✅' : '❌';
+          const coverageNum = parseFloat(coverage);
+          const minimumNum = parseFloat(minimum);
+          
+          let status = '❌';
+          let statusMessage = '';
+          
+          if (!coverage || coverage === '0') {
+            status = '⚠️';
+            statusMessage = 'Coverage calculation failed - no coverage data available';
+          } else if (coverageNum >= minimumNum) {
+            status = '✅';
+            statusMessage = `Coverage ${coverage}% meets minimum requirement of ${minimum}%`;
+          } else {
+            status = '❌';
+            statusMessage = `Coverage ${coverage}% is below minimum requirement of ${minimum}%`;
+          }
           
           let markdownReport = '';
           try {
-            markdownReport = fs.readFileSync('./coverage-report/SummaryGithub.md', 'utf8');
+            if (fs.existsSync('./coverage-report/SummaryGithub.md')) {
+              markdownReport = fs.readFileSync('./coverage-report/SummaryGithub.md', 'utf8');
+            } else {
+              markdownReport = '> No detailed coverage report available. Check the test execution logs for errors.';
+            }
           } catch (e) {
-            markdownReport = 'Coverage report not available';
+            markdownReport = `> Error reading coverage report: ${e.message}`;
           }
           
           const comment = `## ${status} Test Coverage Report
           
-          **Coverage:** ${coverage}% (Minimum: ${minimum}%)
+          **Status:** ${statusMessage}
+          **Coverage:** ${coverage || 'N/A'}% (Minimum: ${minimum}%)
           
           ${markdownReport}
           `;
           
-          github.rest.issues.createComment({
+          await github.rest.issues.createComment({
             issue_number: context.issue.number,
             owner: context.repo.owner,
             repo: context.repo.repo,
