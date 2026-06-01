@@ -1,10 +1,8 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace AvilaVault.Hermes.Abstractions
+﻿namespace AvilaVault.Hermes.Abstractions
 {
-    internal interface ISagaStateMachine
+    public interface ISagaStateMachine
     {
+        IEnumerable<Type> GetRegisteredEventTypes();
+        string Name { get; }
     }
 }

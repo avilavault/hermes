@@ -1,7 +1,9 @@
 ﻿using AvilaVault.Hermes.Abstractions;
 using AvilaVault.Hermes.InMemory;
+using AvilaVault.Hermes.EntityFramework;
 using AvilaVault.Hermes.StateMachine;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.EntityFrameworkCore;
 
 namespace AvilaVault.Hermes.DependencyInjection;
 
@@ -66,6 +68,61 @@ public sealed class SagaConfigurator<TStateMachine, TSaga>
                                     .MakeGenericType(typeof(TStateMachine), typeof(TSaga), eventType);
 
             _services.AddSingleton(handlerInterface, handlerImpl);
+        }
+
+        return this;
+    }
+
+    /// <summary>
+    /// Usa Entity Framework Core para persistência.
+    /// Cria automaticamente um DbContext dedicado para esta saga.
+    /// </summary>
+    /// <param name="configureDbContext">
+    /// Configuração do DbContext — geralmente UseSqlServer/UseNpgsql/UseSqlite.
+    /// Exemplo: opt => opt.UseSqlServer(connectionString)
+    /// </param>
+    public SagaConfigurator<TStateMachine, TSaga> EntityFramework(
+        Action<DbContextOptionsBuilder> configureDbContext)
+    {
+        _services.AddDbContext<ISagaDbContext, SagaDbContext<TSaga>>(configureDbContext);
+
+        _services.AddScoped<ISagaRepository<TSaga>, EntityFrameworkSagaRepository<TSaga>>();
+
+        var tempMachine = Activator.CreateInstance<TStateMachine>();
+        var eventTypes = tempMachine.GetRegisteredEventTypes();
+
+        foreach (var eventType in eventTypes)
+        {
+            var handlerInterface = typeof(ISagaMessageHandler<>).MakeGenericType(eventType);
+            var handlerImpl = typeof(SagaMessageHandler<,,>)
+                                    .MakeGenericType(typeof(TStateMachine), typeof(TSaga), eventType);
+
+            _services.AddScoped(handlerInterface, handlerImpl);
+        }
+
+        return this;
+    }
+
+    /// <summary>
+    /// Usa Entity Framework Core com DbContext customizado fornecido pelo usuário.
+    /// Use quando você já tem um DbContext que inclui múltiplas sagas.
+    /// </summary>
+    /// <typeparam name="TDbContext">Tipo do DbContext customizado</typeparam>
+    public SagaConfigurator<TStateMachine, TSaga> EntityFramework<TDbContext>()
+        where TDbContext : DbContext, ISagaDbContext
+    {
+        _services.AddScoped<ISagaRepository<TSaga>, EntityFrameworkSagaRepository<TSaga>>();
+
+        var tempMachine = Activator.CreateInstance<TStateMachine>();
+        var eventTypes = tempMachine.GetRegisteredEventTypes();
+
+        foreach (var eventType in eventTypes)
+        {
+            var handlerInterface = typeof(ISagaMessageHandler<>).MakeGenericType(eventType);
+            var handlerImpl = typeof(SagaMessageHandler<,,>)
+                                    .MakeGenericType(typeof(TStateMachine), typeof(TSaga), eventType);
+
+            _services.AddScoped(handlerInterface, handlerImpl);
         }
 
         return this;
